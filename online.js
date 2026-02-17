@@ -2,7 +2,7 @@
     'use strict';
 
     function OnlinePlugin() {
-        var network = new Lampa.Reguest();
+        var network = new (Lampa.Reguest || Lampa.Request)();
 
         var DEFAULTS = {
             kodik: {
@@ -387,6 +387,10 @@
 
         // --- Search Controller ---
         function findVideo(card) {
+            if (!card || !card.title) {
+                return;
+            }
+
             Lampa.Loading.start(function() {
                 Lampa.Loading.stop();
             });
@@ -485,7 +489,8 @@
         // Listener for Full page load
         Lampa.Listener.follow('full', function(e) {
             if(e.type == 'complite') {
-                addWatchButton(e.object, e.body);
+                var object = e.data && e.data.movie ? e.data.movie : e.object;
+                addWatchButton(object, e.body);
             }
         });
 
