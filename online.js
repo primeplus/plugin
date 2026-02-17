@@ -419,197 +419,221 @@
     // SECTION 4: SEARCH CONTROLLER
     // ==========================================
 
-    let component = null;
-    let scroll = null;
+    let component = {
+        create: function() {
+            let _this = this;
 
-    async function findVideo(object) {
-        if (!component) {
-            component = Lampa.Component.add('online', {
-                loading: function(show) {
-                    if (show) {
-                        Lampa.Noty.show('Searching...');
-                    }
+            this.activity = new Lampa.Activity({
+                url: '',
+                component: 'online',
+                onBack: function() {
+                    _this.activity.estroy();
                 },
-                empty: function(message) {
-                    Lampa.Noty.show(message);
-                },
-                append: function(element) {
-                    if (scroll) {
-                        scroll.append(element);
-                    }
+                onRender: function() {
+                    _this.startSearch();
                 }
             });
-        }
 
-        component.loading(true);
+            return this.activity;
+        },
 
-        // Get all enabled balancers
-        const enabledBalancers = Config.getAllEnabled();
+        startSearch: function() {
+            const object = this.activity.movie || this.activity;
 
-        if (enabledBalancers.length === 0) {
-            component.loading(false);
-            component.empty('No balancers enabled. Check settings.');
-            return;
-        }
-
-        console.log('[Online] Searching balancers:', enabledBalancers);
-
-        // Create search promises for all enabled balancers
-        const searchPromises = enabledBalancers.map(name => {
-            switch(name) {
-                case 'kodik': return searchKodik(object);
-                case 'hdvb': return searchHDVB(object);
-                case 'filmix': return searchFilmix(object);
-                case 'rezka': return searchRezka(object);
-                case 'videocdn': return searchVideoCDN(object);
-                case 'alloha': return searchAlloha(object);
-                default: return Promise.resolve({ balancer: name, results: [], error: 'Unknown balancer' });
+            if (!object) {
+                this.empty('No movie data');
+                return;
             }
-        });
 
-        // Execute all searches simultaneously
-        const results = await Promise.allSettled(searchPromises);
+            this.loading(true);
 
-        // Process results
-        const successfulResults = [];
-        const errors = [];
+            // Get all enabled balancers
+            const enabledBalancers = Config.getAllEnabled();
 
-        results.forEach(result => {
-            if (result.status === 'fulfilled') {
-                if (result.value.results && result.value.results.length > 0) {
-                    successfulResults.push({
-                        balancer: result.value.balancer,
-                        results: result.value.results
+            if (enabledBalancers.length === 0) {
+                this.loading(false);
+                this.empty('No balancers enabled. Check settings.');
+                return;
+            }
+
+            console.log('[Online] Searching balancers:', enabledBalancers);
+
+            // Create search promises for all enabled balancers
+            const searchPromises = enabledBalancers.map(name => {
+                switch(name) {
+                    case 'kodik': return searchKodik(object);
+                    case 'hdvb': return searchHDVB(object);
+                    case 'filmix': return searchFilmix(object);
+                    case 'rezka': return searchRezka(object);
+                    case 'videocdn': return searchVideoCDN(object);
+                    case 'alloha': return searchAlloha(object);
+                    default: return Promise.resolve({ balancer: name, results: [], error: 'Unknown balancer' });
+                }
+            });
+
+            // Execute all searches simultaneously
+            const self = this;
+            Promise.allSettled(searchPromises).then(function(results) {
+                // Process results
+                const successfulResults = [];
+                const errors = [];
+
+                results.forEach(function(result) {
+                    if (result.status === 'fulfilled') {
+                        if (result.value.results && result.value.results.length > 0) {
+                            successfulResults.push({
+                                balancer: result.value.balancer,
+                                results: result.value.results
+                            });
+                        }
+                        if (result.value.error) {
+                            errors.push(result.value.balancer + ': ' + result.value.error);
+                        }
+                    } else {
+                        console.error('[Search] Promise rejected:', result.reason);
+                        errors.push('Unknown error occurred');
+                    }
+                });
+
+                self.loading(false);
+
+                // Display results or errors
+                if (successfulResults.length > 0) {
+                    self.displayResults(successfulResults, object);
+                } else {
+                    const errorMsg = errors.length > 0
+                        ? errors.join('\n')
+                        : 'No results found';
+                    self.empty(errorMsg);
+                }
+            });
+        },
+
+        loading: function(show) {
+            if (show) {
+                const empty = new Lampa.Empty({
+                    title: 'Searching...',
+                    descr: 'Please wait...'
+                });
+                this.activity.render().html(empty.render());
+            }
+        },
+
+        empty: function(message) {
+            const empty = new Lampa.Empty({
+                title: 'No Results',
+                descr: message
+            });
+            this.activity.render().html(empty.render());
+        },
+
+        displayResults: function(results, object) {
+            // Flatten and sort results by priority
+            const allItems = [];
+
+            results.forEach(function(data) {
+                data.results.forEach(function(item) {
+                    allItems.push({
+                        ...item,
+                        balancer: data.balancer,
+                        priority: DEFAULTS[data.balancer].priority
                     });
-                }
-                if (result.value.error) {
-                    errors.push(`${result.value.balancer}: ${result.value.error}`);
-                }
-            } else {
-                console.error('[Search] Promise rejected:', result.reason);
-                errors.push('Unknown error occurred');
-            }
-        });
-
-        component.loading(false);
-
-        // Display results or errors
-        if (successfulResults.length > 0) {
-            displayResults(successfulResults, object);
-        } else {
-            const errorMsg = errors.length > 0
-                ? errors.join('\n')
-                : 'No results found';
-            component.empty(errorMsg);
-        }
-    }
-
-    function displayResults(results, object) {
-        // Flatten and sort results by priority
-        const allItems = [];
-
-        results.forEach(({ balancer, results: items }) => {
-            items.forEach(item => {
-                allItems.push({
-                    ...item,
-                    balancer: balancer,
-                    priority: DEFAULTS[balancer].priority
                 });
             });
-        });
 
-        // Sort by priority
-        allItems.sort((a, b) => a.priority - b.priority);
-
-        console.log('[Online] Displaying', allItems.length, 'results');
-
-        // Create scroll container
-        scroll = new Lampa.Scroll({
-            step: 200,
-            horizontal: false
-        });
-
-        // Create result cards
-        allItems.forEach(item => {
-            const card = createResultCard(item, object);
-            scroll.append(card);
-        });
-
-        // Display in modal
-        Lampa.Modal.open({
-            title: 'Watch Online',
-            html: scroll.render(),
-            onBack: function() {
-                Lampa.Modal.close();
-            }
-        });
-    }
-
-    function createResultCard(item, object) {
-        const card = $(`
-            <div class="selector online-result">
-                <div class="online-result__title">${item.title}</div>
-                <div class="online-result__info">
-                    <span class="online-result__balancer">${item.balancer.toUpperCase()}</span>
-                    <span class="online-result__quality">${item.quality}</span>
-                    ${item.translation ? `<span class="online-result__translation">${item.translation}</span>` : ''}
-                    ${item.season ? `<span class="online-result__season">S${item.season}</span>` : ''}
-                </div>
-            </div>
-        `);
-
-        card.on('hover:enter', function() {
-            playVideo(item, object);
-        });
-
-        return card;
-    }
-
-    function playVideo(item, object) {
-        Lampa.Modal.close();
-
-        const streamUrl = item.url;
-
-        // Check if it's an embed link that needs extraction
-        if (streamUrl.includes('/embed/') || streamUrl.includes('iframe')) {
-            Lampa.Noty.show('Opening: ' + item.title);
-
-            // For now, just open in external browser
-            // In a full implementation, you would extract the actual stream URL
-            window.open(streamUrl, '_blank');
-        } else {
-            // Direct stream URL
-            Lampa.Player.play({
-                url: streamUrl,
-                title: item.title,
-                quality: item.quality
+            // Sort by priority
+            allItems.sort(function(a, b) {
+                return a.priority - b.priority;
             });
+
+            console.log('[Online] Displaying', allItems.length, 'results');
+
+            // Create scroll container
+            const scroll = new Lampa.Scroll({
+                step: 200,
+                horizontal: false
+            });
+
+            // Create result cards
+            allItems.forEach(function(item) {
+                const card = this.createResultCard(item, object);
+                scroll.append(card);
+            }, this);
+
+            // Append to activity
+            this.activity.render().html(scroll.render());
+        },
+
+        createResultCard: function(item, object) {
+            const card = $(`
+                <div class="selector online-result">
+                    <div class="online-result__title">${item.title}</div>
+                    <div class="online-result__info">
+                        <span class="online-result__balancer">${item.balancer.toUpperCase()}</span>
+                        <span class="online-result__quality">${item.quality}</span>
+                        ${item.translation ? `<span class="online-result__translation">${item.translation}</span>` : ''}
+                        ${item.season ? `<span class="online-result__season">S${item.season}</span>` : ''}
+                    </div>
+                </div>
+            `);
+
+            const self = this;
+            card.on('hover:enter', function() {
+                self.playVideo(item, object);
+            });
+
+            return card;
+        },
+
+        playVideo: function(item, object) {
+            const streamUrl = item.url;
+
+            // Check if it's an embed link that needs extraction
+            if (streamUrl.includes('/embed/') || streamUrl.includes('iframe')) {
+                Lampa.Noty.show('Opening: ' + item.title);
+
+                // For now, just open in external browser
+                // In a full implementation, you would extract the actual stream URL
+                window.open(streamUrl, '_blank');
+            } else {
+                // Direct stream URL
+                Lampa.Player.play({
+                    url: streamUrl,
+                    title: item.title,
+                    quality: item.quality
+                });
+            }
         }
-    }
+    };
 
     // ==========================================
     // SECTION 5: UI INTEGRATION
     // ==========================================
 
     function initUI() {
+        // Create button template
+        const button = `
+            <div class="full-start__button selector view--online" data-subtitle="online 1.0.0">
+                <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 244 260">
+                    <g>
+                        <path d="M242,88v170H10V88h41l-38,38h37.1l38-38h38.4l-38,38h38.4l38-38h38.3l-38,38H204L242,88L242,88z M228.9,2l8,37.7l0,0 L191.2,10L228.9,2z M160.6,56l-45.8-29.7l38-8.1l45.8,29.7L160.6,56z M84.5,72.1L38.8,42.4l38-8.1l45.8,29.7L84.5,72.1z M10,88 L2,50.2L47.8,80L10,88z" fill="currentColor"/>
+                    </g>
+                </svg>
+                <span>Watch Online</span>
+            </div>
+        `;
+
         // Listen for full card render
         Lampa.Listener.follow('full', function(e) {
             if (e.type == 'complite') {
-                const button = $(`
-                    <div class="full-start__button selector view--online">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                        </svg>
-                        <span>Watch Online</span>
-                    </div>
-                `);
+                const btn = $(button);
 
-                button.on('hover:enter', function() {
-                    findVideo(e.data);
+                btn.on('hover:enter', function() {
+                    startSearch(e.data.movie || e.data);
                 });
 
                 // Insert after torrent button
-                e.object.activity.render().find('.view--torrent').after(button);
+                e.object.activity.render().find('.view--torrent').after(btn);
             }
         });
     }
@@ -623,27 +647,24 @@
         const template = createSettingsTemplate();
         Lampa.Template.add('settings_online', template);
 
-        // Add to settings menu
-        Lampa.Settings.listener.follow('open', function(e) {
-            if (e.name == 'main') {
-                const field = $(`
-                    <div class="settings-folder selector" data-component="online">
-                        <div class="settings-folder__icon">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                            </svg>
-                        </div>
-                        <div class="settings-folder__name">Online Sources</div>
+        // Add to main settings menu
+        if (Lampa.Settings.main && Lampa.Settings.main()) {
+            const field = $(`
+                <div class="settings-folder selector" data-component="online">
+                    <div class="settings-folder__icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 244 260">
+                            <g>
+                                <path d="M242,88v170H10V88h41l-38,38h37.1l38-38h38.4l-38,38h38.4l38-38h38.3l-38,38H204L242,88z" fill="currentColor"/>
+                            </g>
+                        </svg>
                     </div>
-                `);
+                    <div class="settings-folder__name">Online Sources</div>
+                </div>
+            `);
 
-                field.on('hover:enter', function() {
-                    Lampa.Settings.create('online');
-                });
-
-                e.body.find('[data-component="more"]').before(field);
-            }
-        });
+            Lampa.Settings.main().render().find('[data-component="more"]').before(field);
+            Lampa.Settings.main().update();
+        }
 
         // Bind events when online settings open
         Lampa.Settings.listener.follow('open', function(e) {
@@ -657,13 +678,13 @@
         let html = '<div class="settings-online">';
 
         // Add each balancer
-        Object.keys(DEFAULTS).forEach(name => {
+        Object.keys(DEFAULTS).forEach(function(name) {
             const config = DEFAULTS[name];
 
             html += `
-                <div class="settings-folder selector" data-name="online_${name}_expand">
-                    <div class="settings-folder__name">${name.toUpperCase()}</div>
-                    <div class="settings-folder__status ${config.enabled ? 'enabled' : 'disabled'}">${config.enabled ? 'ON' : 'OFF'}</div>
+                <div class="settings-param selector" data-name="online_${name}_expand" data-static="true">
+                    <div class="settings-param__name">${name.toUpperCase()}</div>
+                    <div class="settings-param__value">${config.enabled ? 'ON' : 'OFF'}</div>
                 </div>
 
                 <div class="settings-online__details hidden" data-balancer="${name}">
@@ -697,19 +718,26 @@
     function bindSettingsEvents(body) {
         // Toggle balancer details
         body.find('[data-name$="_expand"]').on('hover:enter', function() {
-            const name = $(this).data('name').replace('_expand', '');
-            body.find(`[data-balancer="${name.replace('online_', '')}"]`).toggleClass('hidden');
+            const name = $(this).data('name').replace('online_', '').replace('_expand', '');
+            body.find('[data-balancer="' + name + '"]').toggleClass('hidden');
         });
 
         // Handle toggles
         body.find('[data-type="toggle"]').on('hover:enter', function() {
             const param = $(this).data('name');
-            const currentValue = Lampa.Storage.get(param, $(this).data('default'));
+            const defaultVal = $(this).data('default');
+            const currentValue = Lampa.Storage.get(param, defaultVal);
             const newValue = !currentValue;
 
             Lampa.Storage.set(param, newValue);
 
             $(this).find('.settings-param__value').text(newValue ? 'ON' : 'OFF');
+
+            // Update expand button status
+            const balancerName = param.replace('online_', '').replace('_enabled', '');
+            body.find('[data-name="online_' + balancerName + '_expand"]')
+                .find('.settings-param__value')
+                .text(newValue ? 'ON' : 'OFF');
 
             Lampa.Noty.show('Setting saved');
         });
@@ -717,14 +745,16 @@
         // Handle inputs
         body.find('[data-type="input"]').on('hover:enter', function() {
             const param = $(this).data('name');
-            const currentValue = Lampa.Storage.get(param, $(this).data('default'));
+            const defaultVal = $(this).data('default');
+            const currentValue = Lampa.Storage.get(param, defaultVal);
             const isString = $(this).data('string');
+            const self = $(this);
 
             Lampa.Keyboard.input({
                 title: $(this).find('.settings-param__name').text(),
                 value: currentValue,
                 nosave: true
-            }, (new_value) => {
+            }, function(new_value) {
                 if (new_value !== null) {
                     Lampa.Storage.set(param, new_value);
 
@@ -732,7 +762,7 @@
                         ? '••••••'
                         : (new_value.length > 30 ? new_value.substring(0, 30) + '...' : new_value);
 
-                    $(this).find('.settings-param__value').text(displayValue || 'Not set');
+                    self.find('.settings-param__value').text(displayValue || 'Not set');
 
                     Lampa.Noty.show('Setting saved');
                 }
@@ -747,6 +777,29 @@
     function init() {
         console.log('[Online] Initializing plugin...');
 
+        // Register component (needed for Lampa.Activity.push)
+        Lampa.Component.add('online', component);
+
+        // Register manifest for context menu
+        const manifest = {
+            type: 'video',
+            version: '1.0.0',
+            name: 'Watch Online',
+            description: 'Stream movies and shows from multiple sources',
+            component: 'online',
+            onContextMenu: function(object) {
+                return {
+                    name: 'Watch Online',
+                    description: ''
+                };
+            },
+            onContextLauch: function(object) {
+                startSearch(object);
+            }
+        };
+
+        Lampa.Manifest.plugins = manifest;
+
         // Initialize settings UI
         initSettings();
 
@@ -754,6 +807,20 @@
         initUI();
 
         console.log('[Online] Plugin initialized successfully');
+    }
+
+    function startSearch(object) {
+        // Create activity for the search
+        Lampa.Activity.push({
+            url: '',
+            title: 'Watch Online',
+            component: 'online',
+            search: object.title || object.name,
+            search_one: object.title || object.name,
+            search_two: object.original_title || '',
+            movie: object,
+            page: 1
+        });
     }
 
     // Start plugin when Lampa is ready
