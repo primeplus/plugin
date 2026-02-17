@@ -1,501 +1,766 @@
-(function () {
+(function() {
     'use strict';
 
-    function OnlinePlugin() {
-        var network = new (Lampa.Reguest || Lampa.Request)();
+    // ==========================================
+    // LAMPA ONLINE PLUGIN - CLEAN IMPLEMENTATION
+    // ==========================================
+    // Version: 1.0.0
+    // A fast, lightweight streaming plugin for Lampa
+    // Supports: Kodik, HDVB, Filmix, Rezka, VideoCDN, Alloha
+    // ==========================================
 
-        var DEFAULTS = {
-            kodik: {
-                url: 'https://kodikapi.com',
-                token: '41dd95f84c21719b09d6c71182237a25',
-                enabled: true,
-                name: 'Kodik'
-            },
-            videocdn: {
-                url: 'https://videocdn.tv',
-                token: '822Lv92DG3umkMddXZpuVT1lRehwIh16',
-                enabled: true,
-                name: 'VideoCDN'
-            },
-            hdvb: {
-                url: 'https://hdvb.cc',
-                token: '26857f5979203e91122a76203a743477',
-                enabled: true,
-                name: 'HDVB'
-            },
-            filmix: {
-                url: 'http://filmixapp.cyou',
-                token: '',
-                enabled: true,
-                name: 'Filmix'
-            },
-            rezka: {
-                url: 'https://rezka.ag',
-                token: '', // Not used but kept for consistency
-                enabled: true,
-                name: 'Rezka'
-            },
-            alloha: {
-                url: 'https://api.apbugall.org',
-                token: '',
-                enabled: true,
-                name: 'Alloha'
-            },
-            collaps: {
-                url: 'https://api.collaps.org',
-                token: '', // Not typically needed for public API but good to have
-                enabled: true,
-                name: 'Collaps'
-            }
-        };
+    // ==========================================
+    // SECTION 1: CONFIGURATION SYSTEM
+    // ==========================================
 
-        var sources = {};
-
-        // --- Helpers ---
-        function normalizeURL(url) {
-            return (url || '').replace(/\/+$/, '');
+    const DEFAULTS = {
+        kodik: {
+            url: 'https://kodikapi.com',
+            token: '41dd95f84c21719b09d6c71182237a25',
+            enabled: true,
+            priority: 1
+        },
+        videocdn: {
+            url: 'https://videocdn.tv',
+            token: '822Lv92DG3umkMddXZpuVT1lRehwIh16',
+            enabled: false,  // DISABLED by default (blocked domain)
+            priority: 3
+        },
+        hdvb: {
+            url: 'https://hdvb.cc',
+            token: '26857f5979203e91122a76203a743477',
+            enabled: true,
+            priority: 2
+        },
+        filmix: {
+            url: 'http://filmixapp.cyou',
+            token: '',  // User must provide
+            enabled: false,  // Disabled without token
+            priority: 4
+        },
+        rezka: {
+            url: 'https://rezka.ag',
+            enabled: true,
+            priority: 5
+        },
+        alloha: {
+            url: 'https://api.apbugall.org',
+            token: '',
+            enabled: false,  // Disabled without token
+            priority: 6
+        },
+        collaps: {
+            url: 'https://api.collaps.org',
+            enabled: false,  // DISABLED (non-operational)
+            priority: 7
         }
+    };
 
-        function cleanTitle(str) {
-            return (str || '').replace(/[\-\u2010-\u2015\u2E3A\u2E3B\uFE58\uFE63\uFF0D]/g, ' ').replace(/ +/g, ' ').trim();
+    const Config = {
+        get(balancer, key) {
+            const storageKey = `online_${balancer}_${key}`;
+            const stored = Lampa.Storage.get(storageKey, null);
+            return stored !== null ? stored : DEFAULTS[balancer][key];
+        },
+
+        set(balancer, key, value) {
+            const storageKey = `online_${balancer}_${key}`;
+            Lampa.Storage.set(storageKey, value);
+        },
+
+        getUrl(balancer) {
+            let url = this.get(balancer, 'url');
+            return url.replace(/\/+$/, ''); // Remove trailing slash
+        },
+
+        getToken(balancer) {
+            return this.get(balancer, 'token') || '';
+        },
+
+        isEnabled(balancer) {
+            return this.get(balancer, 'enabled') === true;
+        },
+
+        getAllEnabled() {
+            return Object.keys(DEFAULTS).filter(name => this.isEnabled(name));
         }
+    };
 
-        function buildUrl(url, params) {
-            var str = [];
-            for (var p in params) {
-                if (params.hasOwnProperty(p) && params[p]) {
-                    str.push(encodeURIComponent(p) + "=" + encodeURIComponent(params[p]));
-                }
-            }
-            if (str.length === 0) return url;
-            return url + (url.indexOf('?') > -1 ? '&' : '?') + str.join("&");
-        }
+    // ==========================================
+    // SECTION 2: NETWORK LAYER
+    // ==========================================
 
-        // --- Configuration Manager ---
-        function initSettings() {
-            for (var key in DEFAULTS) {
-                sources[key] = {
-                    url: Lampa.Storage.get('online_mod_' + key + '_url', DEFAULTS[key].url),
-                    token: Lampa.Storage.get('online_mod_' + key + '_token', DEFAULTS[key].token),
-                    enabled: Lampa.Storage.get('online_mod_' + key + '_enabled', DEFAULTS[key].enabled),
-                    name: DEFAULTS[key].name
+    const Network = {
+        request(url, params = {}) {
+            return new Promise((resolve, reject) => {
+                const network = new Lampa.Reguest();
+
+                const options = {
+                    dataType: params.dataType || 'json',
+                    timeout: params.timeout || 15000,
+                    headers: params.headers || {}
                 };
-            }
+
+                if (params.data) {
+                    options.data = params.data;
+                }
+
+                network.native(url, (response) => {
+                    resolve(response);
+                }, (error) => {
+                    console.error('[Network] Error:', error);
+                    reject(error);
+                }, options);
+            });
+        },
+
+        async get(url, params = {}) {
+            return this.request(url, { ...params, method: 'GET' });
+        },
+
+        async post(url, data, params = {}) {
+            return this.request(url, { ...params, method: 'POST', data });
+        }
+    };
+
+    // ==========================================
+    // SECTION 3: BALANCERS IMPLEMENTATION
+    // ==========================================
+
+    // Standardized result format:
+    // {
+    //     balancer: 'name',
+    //     results: [
+    //         {
+    //             title: string,
+    //             original_title: string,
+    //             year: number,
+    //             quality: string,
+    //             translation: string,
+    //             url: string,
+    //             season: number | null,
+    //             episodes: number | null
+    //         }
+    //     ],
+    //     error: string | null
+    // }
+
+    async function searchKodik(object) {
+        const url = Config.getUrl('kodik');
+        const token = Config.getToken('kodik');
+
+        if (!token) {
+            return { balancer: 'kodik', results: [], error: 'Token required' };
         }
 
-        // --- Settings UI ---
-        function openSettings() {
-            var controller = Lampa.Controller.enabled().name;
-            var title = Lampa.Lang.translate('title_settings') + ' - Online';
-            var items = [];
+        try {
+            let params = `?token=${token}&limit=100&with_material_data=true`;
 
-            for (var key in sources) {
-                (function(k) {
-                    var s = sources[k];
-                    items.push({
-                        title: s.name,
-                        subtitle: (s.enabled ? Lampa.Lang.translate('settings_param_status_on') || 'On' : Lampa.Lang.translate('settings_param_status_off') || 'Off') + ' - ' + s.url,
-                        url: s.url,
-                        enabled: s.enabled,
-                        onSelect: function() {
-                            openSourceSettings(k);
-                        }
-                    });
-                })(key);
-            }
-
-            Lampa.Select.show({
-                title: title,
-                items: items,
-                onBack: function() {
-                    Lampa.Controller.toggle(controller);
-                }
-            });
-        }
-
-        function openSourceSettings(key) {
-            var source = sources[key];
-            var menu = [
-                {
-                    title: Lampa.Lang.translate('settings_param_status') || 'Status',
-                    subtitle: source.enabled ? (Lampa.Lang.translate('settings_param_status_on') || 'On') : (Lampa.Lang.translate('settings_param_status_off') || 'Off'),
-                    onSelect: function() {
-                        source.enabled = !source.enabled;
-                        Lampa.Storage.set('online_mod_' + key + '_enabled', source.enabled);
-                        this.subtitle = source.enabled ? (Lampa.Lang.translate('settings_param_status_on') || 'On') : (Lampa.Lang.translate('settings_param_status_off') || 'Off');
-                        Lampa.Activity.render();
-                    }
-                },
-                {
-                    title: 'URL',
-                    subtitle: source.url,
-                    onSelect: function() {
-                        Lampa.Input.edit({
-                            value: source.url,
-                            title: 'URL for ' + source.name,
-                            free: true,
-                            nosave: true
-                        }, function(newVal) {
-                            source.url = newVal;
-                            Lampa.Storage.set('online_mod_' + key + '_url', source.url);
-                            Lampa.Activity.back();
-                        });
-                    }
-                },
-                {
-                    title: 'Token',
-                    subtitle: source.token ? source.token.substr(0, 10) + '...' : 'Empty',
-                    onSelect: function() {
-                        Lampa.Input.edit({
-                            value: source.token,
-                            title: 'Token for ' + source.name,
-                            free: true,
-                            nosave: true
-                        }, function(newVal) {
-                            source.token = newVal;
-                            Lampa.Storage.set('online_mod_' + key + '_token', source.token);
-                            Lampa.Activity.back();
-                        });
-                    }
-                },
-                {
-                    title: 'Reset to Default',
-                    subtitle: 'Restore default URL and Token',
-                    onSelect: function() {
-                        source.url = DEFAULTS[key].url;
-                        source.token = DEFAULTS[key].token;
-                        Lampa.Storage.set('online_mod_' + key + '_url', source.url);
-                        Lampa.Storage.set('online_mod_' + key + '_token', source.token);
-                        Lampa.Noty.show('Restored defaults for ' + source.name);
-                        Lampa.Activity.back();
-                    }
-                }
-            ];
-
-            Lampa.Select.show({
-                title: source.name,
-                items: menu,
-                onBack: function() {
-                    openSettings();
-                }
-            });
-        }
-
-        // Add settings button to main settings
-        Lampa.Settings.listener.follow('open', function (e) {
-            if (e.name == 'main') {
-                e.body.find('[data-name="plugins"]').after('<div class="settings__layerselector-item" data-name="online_mod"><div class="settings__layerselector-icon"><svg height="24" viewBox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h24v24H0z" fill="none"/><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg></div><div class="settings__layerselector-title">Online Mod</div></div>');
-                e.body.find('[data-name="online_mod"]').on('click', function () {
-                    openSettings();
-                });
-            }
-        });
-
-        // --- Balancers ---
-        var Balancers = {
-            kodik: function(card) {
-                return new Promise(function(resolve, reject) {
-                    var url = normalizeURL(sources.kodik.url) + '/search';
-                    var params = {
-                        token: sources.kodik.token,
-                        title: cleanTitle(card.title),
-                        limit: 10,
-                        with_material_data: true
-                    };
-                    url = buildUrl(url, params);
-
-                    network.silent(url, function(json) {
-                        if (json && json.results && json.results.length) {
-                            var results = json.results.map(function(item) {
-                                return {
-                                    name: 'Kodik',
-                                    title: item.title,
-                                    url: item.link,
-                                    quality: item.quality || 'Unknown',
-                                    translation: item.translation ? item.translation.title : 'Original',
-                                    is_iframe: true
-                                };
-                            });
-                            resolve(results);
-                        } else {
-                            resolve([]);
-                        }
-                    }, function(a, c) {
-                        reject('Kodik error');
-                    });
-                });
-            },
-            videocdn: function(card) {
-                return new Promise(function(resolve, reject) {
-                    var url = normalizeURL(sources.videocdn.url) + '/api/short';
-                    var params = {
-                        api_token: sources.videocdn.token,
-                        title: cleanTitle(card.title)
-                    };
-                    if (card.kp_id) params.kinopoisk_id = card.kp_id;
-                    else if (card.imdb_id) params.imdb_id = card.imdb_id;
-                    url = buildUrl(url, params);
-
-                    network.silent(url, function(json) {
-                        if (json && json.data && json.data.length) {
-                             var results = json.data.map(function(item) {
-                                return {
-                                    name: 'VideoCDN',
-                                    title: item.title,
-                                    url: item.iframe_src,
-                                    quality: item.quality || 'HD',
-                                    translation: 'Default',
-                                    is_iframe: true
-                                };
-                            });
-                            resolve(results);
-                        } else {
-                            resolve([]);
-                        }
-                    }, function() {
-                        reject('VideoCDN error');
-                    });
-                });
-            },
-            hdvb: function(card) {
-                return new Promise(function(resolve, reject) {
-                    var url = normalizeURL(sources.hdvb.url) + '/api/videos.json';
-                    var params = {
-                        token: sources.hdvb.token,
-                        title: cleanTitle(card.title)
-                    };
-                    if (card.kp_id) params.id_kp = card.kp_id;
-                    url = buildUrl(url, params);
-
-                    network.silent(url, function(json) {
-                        if (json && json.length) {
-                             var results = json.map(function(item) {
-                                return {
-                                    name: 'HDVB',
-                                    title: item.title_ru || item.title_en,
-                                    url: item.iframe_url,
-                                    quality: item.quality || 'HD',
-                                    translation: item.translator || 'Default',
-                                    is_iframe: true
-                                };
-                            });
-                            resolve(results);
-                        } else {
-                            resolve([]);
-                        }
-                    }, function() {
-                        reject('HDVB error');
-                    });
-                });
-            },
-            filmix: function(card) {
-                return new Promise(function(resolve, reject) {
-                    if(!sources.filmix.token) {
-                        resolve([]);
-                        return;
-                    }
-                    var url = normalizeURL(sources.filmix.url) + '/api/v2/search';
-                    var params = {
-                        user_token: sources.filmix.token,
-                        name: cleanTitle(card.title)
-                    };
-                    url = buildUrl(url, params);
-                    network.silent(url, function(json) {
-                        if (json && json.length) {
-                            var results = json.map(function(item) {
-                                return {
-                                    name: 'Filmix',
-                                    title: item.title,
-                                    url: item.link,
-                                    quality: item.quality || 'HD',
-                                    translation: 'Default',
-                                    is_iframe: true
-                                };
-                            });
-                            resolve(results);
-                        } else {
-                            resolve([]);
-                        }
-                    }, function() {
-                        reject('Filmix error');
-                    });
-                });
-            },
-            rezka: function(card) {
-                return new Promise(function(resolve, reject) {
-                    // Direct link to search
-                    if(!sources.rezka.enabled) {
-                        resolve([]);
-                        return;
-                    }
-                    var searchUrl = normalizeURL(sources.rezka.url) + '/search/?q=' + encodeURIComponent(cleanTitle(card.title));
-                    resolve([{
-                        name: 'Rezka',
-                        title: card.title + ' (Search)',
-                        url: searchUrl,
-                        quality: 'Site',
-                        translation: 'Search',
-                        is_iframe: false,
-                        is_link: true
-                    }]);
-                });
-            },
-            alloha: function(card) {
-                return new Promise(function(resolve, reject) {
-                     if(!sources.alloha.token) {
-                        resolve([]);
-                        return;
-                    }
-                    var url = normalizeURL(sources.alloha.url) + '/';
-                    var params = {
-                        token: sources.alloha.token,
-                        name: cleanTitle(card.title)
-                    };
-                    url = buildUrl(url, params);
-                    network.silent(url, function(json) {
-                        if (json && json.data && json.data.length) {
-                            var results = json.data.map(function(item) {
-                                return {
-                                    name: 'Alloha',
-                                    title: item.name,
-                                    url: item.iframe,
-                                    quality: item.quality || 'HD',
-                                    translation: item.translation || 'Default',
-                                    is_iframe: true
-                                };
-                            });
-                            resolve(results);
-                        } else {
-                            resolve([]);
-                        }
-                    }, function() {
-                        reject('Alloha error');
-                    });
-                });
-            },
-            collaps: function(card) {
-                return new Promise(function(resolve, reject) {
-                    if (!sources.collaps.enabled) {
-                        resolve([]);
-                        return;
-                    }
-                    // Collaps is strict. Just return empty for now as requested unless we have specific logic
-                    resolve([]);
-                });
-            }
-        };
-
-        // --- Search Controller ---
-        function findVideo(card) {
-            if (!card || !card.title) {
-                return;
-            }
-
-            Lampa.Loading.start(function() {
-                Lampa.Loading.stop();
-            });
-
-            var promises = [];
-
-            for (var key in sources) {
-                if (sources[key].enabled && Balancers[key]) {
-                    // Create promise for each source and catch errors to prevent failure of all
-                    promises.push(
-                        Balancers[key](card)
-                        .then(function(result) {
-                            return { status: 'fulfilled', value: result };
-                        })
-                        .catch(function(err) {
-                            return { status: 'rejected', reason: err };
-                        })
-                    );
+            // Prefer Kinopoisk ID
+            if (object.movie.kinopoisk_id) {
+                params += `&kinopoisk_id=${encodeURIComponent(object.movie.kinopoisk_id)}`;
+            } else if (object.movie.imdb_id) {
+                params += `&imdb_id=${encodeURIComponent(object.movie.imdb_id)}`;
+            } else {
+                // Fallback to title search
+                const title = object.search || object.movie.title;
+                params += `&title=${encodeURIComponent(title)}`;
+                if (object.search_date) {
+                    params += `&year=${object.search_date}`;
                 }
             }
 
-            Promise.all(promises).then(function(results) {
-                Lampa.Loading.stop();
+            const response = await Network.get(`${url}/search${params}`);
 
-                var allItems = [];
-                results.forEach(function(result) {
-                    if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-                        allItems = allItems.concat(result.value);
-                    }
-                });
+            if (response && response.results && response.results.length > 0) {
+                const results = response.results.map(item => ({
+                    title: item.title || '',
+                    original_title: item.title_orig || '',
+                    year: item.year || null,
+                    quality: item.quality || 'Unknown',
+                    translation: item.translation?.title || 'Unknown',
+                    url: item.link || '',
+                    season: item.seasons ? Object.keys(item.seasons).length : null,
+                    episodes: item.episodes_count || null,
+                    kp_id: item.kinopoisk_id,
+                    imdb_id: item.imdb_id
+                }));
 
-                if (allItems.length) {
-                    showResults(allItems);
-                } else {
-                    Lampa.Noty.show(Lampa.Lang.translate('online_query_null') || 'No sources found');
-                }
-            });
-        }
-
-        function showResults(items) {
-            Lampa.Select.show({
-                title: 'Online',
-                items: items.map(function(item) {
-                    return {
-                        title: item.title,
-                        subtitle: item.name + ' - ' + item.quality + (item.translation ? ' - ' + item.translation : ''),
-                        url: item.url,
-                        is_iframe: item.is_iframe,
-                        is_link: item.is_link,
-                        onSelect: function(a) {
-                            if(item.is_link) {
-                                Lampa.Platform.api().open ? Lampa.Platform.api().open(item.url) : window.open(item.url, '_blank');
-                            } else if (item.is_iframe) {
-                                var action = [
-                                    {
-                                        title: Lampa.Lang.translate('title_open') || 'Open',
-                                        subtitle: 'Open in browser/external player',
-                                        onSelect: function() {
-                                            Lampa.Platform.api().open ? Lampa.Platform.api().open(item.url) : window.open(item.url, '_blank');
-                                        }
-                                    },
-                                    {
-                                        title: 'Play (Internal)',
-                                        subtitle: 'Attempt to play in internal player (experimental)',
-                                        onSelect: function() {
-                                            Lampa.Player.play({url: item.url, title: item.title});
-                                        }
-                                    }
-                                ];
-                                Lampa.Select.show({title: item.name, items: action, onBack: function(){ showResults(items); }});
-                            } else {
-                                Lampa.Player.play(item);
-                            }
-                        }
-                    };
-                }),
-                onBack: function() {
-                    Lampa.Controller.toggle('content');
-                }
-            });
-        }
-
-        // --- UI Integration ---
-        function addWatchButton(object, where) {
-            if ($(where).find('.view--online').length) return;
-
-            var btn = $('<div class="full-start__button selector view--online" data-subtitle="Watch Online"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" height="24" width="24"><path d="M0 0h24v24H0z" fill="none"/><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg><span>Online</span></div>');
-
-            btn.on('hover:enter', function() {
-                findVideo(object);
-            });
-
-            $(where).find('.full-start__buttons').append(btn);
-        }
-
-        // Listener for Full page load
-        Lampa.Listener.follow('full', function(e) {
-            if(e.type == 'complite') {
-                var object = e.data && e.data.movie ? e.data.movie : e.object;
-                addWatchButton(object, e.body);
+                return { balancer: 'kodik', results, error: null };
+            } else {
+                return { balancer: 'kodik', results: [], error: 'No results' };
             }
-        });
-
-        initSettings();
+        } catch (error) {
+            console.warn('[Kodik] Error:', error);
+            return { balancer: 'kodik', results: [], error: 'Network error' };
+        }
     }
 
-    if(window.Lampa) new OnlinePlugin();
+    async function searchHDVB(object) {
+        const url = Config.getUrl('hdvb');
+        const token = Config.getToken('hdvb');
+
+        if (!token) {
+            return { balancer: 'hdvb', results: [], error: 'Token required' };
+        }
+
+        try {
+            let params = `?token=${token}`;
+
+            if (object.movie.kinopoisk_id) {
+                params += `&id_kp=${object.movie.kinopoisk_id}`;
+            } else {
+                const title = object.search || object.movie.title;
+                params += `&title=${encodeURIComponent(title)}`;
+            }
+
+            const response = await Network.get(`${url}/api/videos.json${params}`);
+
+            if (response && response.success && response.data) {
+                const results = response.data.map(item => ({
+                    title: item.title || '',
+                    quality: item.quality || 'Unknown',
+                    translation: item.translation || 'Unknown',
+                    url: item.link || item.iframe_url || '',
+                    season: item.season || null,
+                    episodes: item.episodes || null
+                }));
+
+                return { balancer: 'hdvb', results, error: null };
+            } else {
+                return { balancer: 'hdvb', results: [], error: 'No results' };
+            }
+        } catch (error) {
+            console.warn('[HDVB] Error:', error);
+            return { balancer: 'hdvb', results: [], error: 'Network error' };
+        }
+    }
+
+    async function searchFilmix(object) {
+        const url = Config.getUrl('filmix');
+        const token = Config.getToken('filmix');
+
+        if (!token) {
+            return { balancer: 'filmix', results: [], error: 'User token required (get from Filmix PRO)' };
+        }
+
+        try {
+            const title = object.search || object.movie.title;
+            const searchUrl = `${url}/api/v2/search`;
+
+            const params = new URLSearchParams({
+                user_dev_token: token,
+                name: title
+            });
+
+            const headers = {
+                'User-Agent': 'Filmix/2.1.1 (Android; SDK 29; en_US)'
+            };
+
+            const response = await Network.get(`${searchUrl}?${params}`, { headers });
+
+            if (response && Array.isArray(response) && response.length > 0) {
+                const results = response.map(item => ({
+                    title: item.title || '',
+                    original_title: item.original_title || '',
+                    year: item.year || null,
+                    quality: 'Up to 1080p',
+                    translation: 'Original',
+                    url: `${url}/post/${item.id}`,
+                    season: item.last_episode?.season || null,
+                    episodes: item.last_episode?.episode || null
+                }));
+
+                return { balancer: 'filmix', results, error: null };
+            } else {
+                return { balancer: 'filmix', results: [], error: 'No results' };
+            }
+        } catch (error) {
+            console.warn('[Filmix] Error:', error);
+            return { balancer: 'filmix', results: [], error: 'Network error' };
+        }
+    }
+
+    async function searchRezka(object) {
+        const url = Config.getUrl('rezka');
+
+        try {
+            const title = object.search || object.movie.title;
+            const searchUrl = `${url}/search/?q=${encodeURIComponent(title)}`;
+
+            const response = await Network.get(searchUrl, { dataType: 'text' });
+
+            // Parse HTML
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(response, 'text/html');
+            const items = doc.querySelectorAll('.b-content__inline_item');
+
+            const results = [];
+            items.forEach(item => {
+                const link = item.querySelector('a');
+                const titleEl = item.querySelector('.b-content__inline_item-link');
+
+                if (link && titleEl) {
+                    const infoDiv = item.querySelector('.b-content__inline_item-features');
+                    let quality = 'Unknown';
+
+                    if (infoDiv) {
+                        const qualityText = infoDiv.textContent;
+                        if (qualityText.includes('4K')) quality = '4K';
+                        else if (qualityText.includes('1080')) quality = '1080p';
+                        else if (qualityText.includes('720')) quality = '720p';
+                    }
+
+                    results.push({
+                        title: titleEl.textContent.trim(),
+                        url: link.href,
+                        quality: quality,
+                        translation: 'Original'
+                    });
+                }
+            });
+
+            if (results.length > 0) {
+                return { balancer: 'rezka', results, error: null };
+            } else {
+                return { balancer: 'rezka', results: [], error: 'No results' };
+            }
+        } catch (error) {
+            console.warn('[Rezka] Error:', error);
+            return { balancer: 'rezka', results: [], error: 'Network error (try changing mirror in settings)' };
+        }
+    }
+
+    async function searchVideoCDN(object) {
+        const url = Config.getUrl('videocdn');
+        const token = Config.getToken('videocdn');
+
+        if (!token) {
+            return { balancer: 'videocdn', results: [], error: 'Token required' };
+        }
+
+        try {
+            let params = `?api_token=${token}`;
+
+            if (object.movie.kinopoisk_id) {
+                params += `&kinopoisk_id=${object.movie.kinopoisk_id}`;
+            } else {
+                const title = object.search || object.movie.title;
+                params += `&title=${encodeURIComponent(title)}`;
+            }
+
+            const response = await Network.get(`${url}/api/short${params}`, { timeout: 10000 });
+
+            if (response && response.data && response.data.length > 0) {
+                const results = response.data.map(item => ({
+                    title: item.title || '',
+                    original_title: item.title_orig || '',
+                    quality: item.quality || 'Unknown',
+                    translation: item.translation?.title || 'Unknown',
+                    url: item.iframe || '',
+                    season: item.season_count || null,
+                    episodes: item.episode_count || null
+                }));
+
+                return { balancer: 'videocdn', results, error: null };
+            } else {
+                return { balancer: 'videocdn', results: [], error: 'No results' };
+            }
+        } catch (error) {
+            console.warn('[VideoCDN] Error (likely blocked):', error);
+            return {
+                balancer: 'videocdn',
+                results: [],
+                error: 'Blocked/SSL error - try changing domain in settings'
+            };
+        }
+    }
+
+    async function searchAlloha(object) {
+        const url = Config.getUrl('alloha');
+        const token = Config.getToken('alloha');
+
+        if (!token) {
+            return { balancer: 'alloha', results: [], error: 'Token required' };
+        }
+
+        try {
+            let params = `?token=${token}`;
+
+            if (object.movie.kinopoisk_id) {
+                params += `&kp=${object.movie.kinopoisk_id}`;
+            } else if (object.movie.imdb_id) {
+                params += `&imdb=${object.movie.imdb_id}`;
+            } else {
+                return { balancer: 'alloha', results: [], error: 'Kinopoisk ID or IMDB ID required' };
+            }
+
+            const response = await Network.get(`${url}/${params}`);
+
+            if (response && response.data && response.data.iframe) {
+                const results = [{
+                    title: object.movie.title || 'Unknown',
+                    quality: 'Unknown',
+                    translation: 'Original',
+                    url: response.data.iframe
+                }];
+
+                return { balancer: 'alloha', results, error: null };
+            } else {
+                return { balancer: 'alloha', results: [], error: 'No results' };
+            }
+        } catch (error) {
+            console.warn('[Alloha] Error:', error);
+            return { balancer: 'alloha', results: [], error: 'Network error' };
+        }
+    }
+
+    // ==========================================
+    // SECTION 4: SEARCH CONTROLLER
+    // ==========================================
+
+    let component = null;
+    let scroll = null;
+
+    async function findVideo(object) {
+        if (!component) {
+            component = Lampa.Component.add('online', {
+                loading: function(show) {
+                    if (show) {
+                        Lampa.Noty.show('Searching...');
+                    }
+                },
+                empty: function(message) {
+                    Lampa.Noty.show(message);
+                },
+                append: function(element) {
+                    if (scroll) {
+                        scroll.append(element);
+                    }
+                }
+            });
+        }
+
+        component.loading(true);
+
+        // Get all enabled balancers
+        const enabledBalancers = Config.getAllEnabled();
+
+        if (enabledBalancers.length === 0) {
+            component.loading(false);
+            component.empty('No balancers enabled. Check settings.');
+            return;
+        }
+
+        console.log('[Online] Searching balancers:', enabledBalancers);
+
+        // Create search promises for all enabled balancers
+        const searchPromises = enabledBalancers.map(name => {
+            switch(name) {
+                case 'kodik': return searchKodik(object);
+                case 'hdvb': return searchHDVB(object);
+                case 'filmix': return searchFilmix(object);
+                case 'rezka': return searchRezka(object);
+                case 'videocdn': return searchVideoCDN(object);
+                case 'alloha': return searchAlloha(object);
+                default: return Promise.resolve({ balancer: name, results: [], error: 'Unknown balancer' });
+            }
+        });
+
+        // Execute all searches simultaneously
+        const results = await Promise.allSettled(searchPromises);
+
+        // Process results
+        const successfulResults = [];
+        const errors = [];
+
+        results.forEach(result => {
+            if (result.status === 'fulfilled') {
+                if (result.value.results && result.value.results.length > 0) {
+                    successfulResults.push({
+                        balancer: result.value.balancer,
+                        results: result.value.results
+                    });
+                }
+                if (result.value.error) {
+                    errors.push(`${result.value.balancer}: ${result.value.error}`);
+                }
+            } else {
+                console.error('[Search] Promise rejected:', result.reason);
+                errors.push('Unknown error occurred');
+            }
+        });
+
+        component.loading(false);
+
+        // Display results or errors
+        if (successfulResults.length > 0) {
+            displayResults(successfulResults, object);
+        } else {
+            const errorMsg = errors.length > 0
+                ? errors.join('\n')
+                : 'No results found';
+            component.empty(errorMsg);
+        }
+    }
+
+    function displayResults(results, object) {
+        // Flatten and sort results by priority
+        const allItems = [];
+
+        results.forEach(({ balancer, results: items }) => {
+            items.forEach(item => {
+                allItems.push({
+                    ...item,
+                    balancer: balancer,
+                    priority: DEFAULTS[balancer].priority
+                });
+            });
+        });
+
+        // Sort by priority
+        allItems.sort((a, b) => a.priority - b.priority);
+
+        console.log('[Online] Displaying', allItems.length, 'results');
+
+        // Create scroll container
+        scroll = new Lampa.Scroll({
+            step: 200,
+            horizontal: false
+        });
+
+        // Create result cards
+        allItems.forEach(item => {
+            const card = createResultCard(item, object);
+            scroll.append(card);
+        });
+
+        // Display in modal
+        Lampa.Modal.open({
+            title: 'Watch Online',
+            html: scroll.render(),
+            onBack: function() {
+                Lampa.Modal.close();
+            }
+        });
+    }
+
+    function createResultCard(item, object) {
+        const card = $(`
+            <div class="selector online-result">
+                <div class="online-result__title">${item.title}</div>
+                <div class="online-result__info">
+                    <span class="online-result__balancer">${item.balancer.toUpperCase()}</span>
+                    <span class="online-result__quality">${item.quality}</span>
+                    ${item.translation ? `<span class="online-result__translation">${item.translation}</span>` : ''}
+                    ${item.season ? `<span class="online-result__season">S${item.season}</span>` : ''}
+                </div>
+            </div>
+        `);
+
+        card.on('hover:enter', function() {
+            playVideo(item, object);
+        });
+
+        return card;
+    }
+
+    function playVideo(item, object) {
+        Lampa.Modal.close();
+
+        const streamUrl = item.url;
+
+        // Check if it's an embed link that needs extraction
+        if (streamUrl.includes('/embed/') || streamUrl.includes('iframe')) {
+            Lampa.Noty.show('Opening: ' + item.title);
+
+            // For now, just open in external browser
+            // In a full implementation, you would extract the actual stream URL
+            window.open(streamUrl, '_blank');
+        } else {
+            // Direct stream URL
+            Lampa.Player.play({
+                url: streamUrl,
+                title: item.title,
+                quality: item.quality
+            });
+        }
+    }
+
+    // ==========================================
+    // SECTION 5: UI INTEGRATION
+    // ==========================================
+
+    function initUI() {
+        // Listen for full card render
+        Lampa.Listener.follow('full', function(e) {
+            if (e.type == 'complite') {
+                const button = $(`
+                    <div class="full-start__button selector view--online">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                        </svg>
+                        <span>Watch Online</span>
+                    </div>
+                `);
+
+                button.on('hover:enter', function() {
+                    findVideo(e.data);
+                });
+
+                // Insert after torrent button
+                e.object.activity.render().find('.view--torrent').after(button);
+            }
+        });
+    }
+
+    // ==========================================
+    // SECTION 6: SETTINGS UI
+    // ==========================================
+
+    function initSettings() {
+        // Create settings template
+        const template = createSettingsTemplate();
+        Lampa.Template.add('settings_online', template);
+
+        // Add to settings menu
+        Lampa.Settings.listener.follow('open', function(e) {
+            if (e.name == 'main') {
+                const field = $(`
+                    <div class="settings-folder selector" data-component="online">
+                        <div class="settings-folder__icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                            </svg>
+                        </div>
+                        <div class="settings-folder__name">Online Sources</div>
+                    </div>
+                `);
+
+                field.on('hover:enter', function() {
+                    Lampa.Settings.create('online');
+                });
+
+                e.body.find('[data-component="more"]').before(field);
+            }
+        });
+
+        // Bind events when online settings open
+        Lampa.Settings.listener.follow('open', function(e) {
+            if (e.name == 'online') {
+                bindSettingsEvents(e.body);
+            }
+        });
+    }
+
+    function createSettingsTemplate() {
+        let html = '<div class="settings-online">';
+
+        // Add each balancer
+        Object.keys(DEFAULTS).forEach(name => {
+            const config = DEFAULTS[name];
+
+            html += `
+                <div class="settings-folder selector" data-name="online_${name}_expand">
+                    <div class="settings-folder__name">${name.toUpperCase()}</div>
+                    <div class="settings-folder__status ${config.enabled ? 'enabled' : 'disabled'}">${config.enabled ? 'ON' : 'OFF'}</div>
+                </div>
+
+                <div class="settings-online__details hidden" data-balancer="${name}">
+                    <div class="settings-param selector" data-name="online_${name}_enabled" data-type="toggle" data-default="${config.enabled}">
+                        <div class="settings-param__name">Enabled</div>
+                        <div class="settings-param__value"></div>
+                    </div>
+
+                    <div class="settings-param selector" data-name="online_${name}_url" data-type="input" data-default="${config.url}">
+                        <div class="settings-param__name">URL</div>
+                        <div class="settings-param__value">${config.url}</div>
+                    </div>
+            `;
+
+            if (config.token !== undefined) {
+                html += `
+                    <div class="settings-param selector" data-name="online_${name}_token" data-type="input" data-string="true" data-default="${config.token}">
+                        <div class="settings-param__name">Token</div>
+                        <div class="settings-param__value">${config.token ? '••••••' : 'Not set'}</div>
+                    </div>
+                `;
+            }
+
+            html += '</div>';
+        });
+
+        html += '</div>';
+        return html;
+    }
+
+    function bindSettingsEvents(body) {
+        // Toggle balancer details
+        body.find('[data-name$="_expand"]').on('hover:enter', function() {
+            const name = $(this).data('name').replace('_expand', '');
+            body.find(`[data-balancer="${name.replace('online_', '')}"]`).toggleClass('hidden');
+        });
+
+        // Handle toggles
+        body.find('[data-type="toggle"]').on('hover:enter', function() {
+            const param = $(this).data('name');
+            const currentValue = Lampa.Storage.get(param, $(this).data('default'));
+            const newValue = !currentValue;
+
+            Lampa.Storage.set(param, newValue);
+
+            $(this).find('.settings-param__value').text(newValue ? 'ON' : 'OFF');
+
+            Lampa.Noty.show('Setting saved');
+        });
+
+        // Handle inputs
+        body.find('[data-type="input"]').on('hover:enter', function() {
+            const param = $(this).data('name');
+            const currentValue = Lampa.Storage.get(param, $(this).data('default'));
+            const isString = $(this).data('string');
+
+            Lampa.Keyboard.input({
+                title: $(this).find('.settings-param__name').text(),
+                value: currentValue,
+                nosave: true
+            }, (new_value) => {
+                if (new_value !== null) {
+                    Lampa.Storage.set(param, new_value);
+
+                    const displayValue = isString && new_value
+                        ? '••••••'
+                        : (new_value.length > 30 ? new_value.substring(0, 30) + '...' : new_value);
+
+                    $(this).find('.settings-param__value').text(displayValue || 'Not set');
+
+                    Lampa.Noty.show('Setting saved');
+                }
+            });
+        });
+    }
+
+    // ==========================================
+    // SECTION 7: INITIALIZATION
+    // ==========================================
+
+    function init() {
+        console.log('[Online] Initializing plugin...');
+
+        // Initialize settings UI
+        initSettings();
+
+        // Initialize main UI
+        initUI();
+
+        console.log('[Online] Plugin initialized successfully');
+    }
+
+    // Start plugin when Lampa is ready
+    if (typeof Lampa !== 'undefined') {
+        init();
+    } else {
+        console.error('[Online] Lampa is not defined');
+    }
+
 })();
